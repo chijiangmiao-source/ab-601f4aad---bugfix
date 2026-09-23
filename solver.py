@@ -259,85 +259,66 @@ def audit(payload: Any) -> dict[str, Any]:
 
     total = W[0][n]
 
-    # ---------- outside DP ----------
-    # O[i][j]：根区间 [0,n) 的最优方案中，[i,j) 作为一个内部最优子区间出现的
-    # 方案数（外部上下文数）。按父区间向其两个子区间下发贡献。
-    Out = [[0.0] * (n + 1) for _ in range(n + 1)]
-    Out[0][n] = 1.0
+    # ---------- outside DP（全程整数，无浮点份额） ----------
+    # E[i][j]：区间 [i,j) 作为一个最优子块出现时，其“外部”的补全方式数——
+    # 即区间外各点（含层层包裹该区间的弧）上与全局最优相容的部分匹配数。
+    # 父块的每个最优内部匹配可与任一外部补全自由组合，故下发时只做整数乘法，
+    # 避免 W_child/W_parent 这类份额除法在 2^53 量级上舍入成 1.0 的问题。
+    E = [[0] * (n + 1) for _ in range(n + 1)]
+    E[0][n] = 1
+    used_count: dict[str, int] = {cid: 0 for cid, _a, _b, _r in candidates}
+
+    def rule_optimal(h: int, m: int, k: int, r: int) -> bool:
+        return (
+            k < m
+            and 1 + P[h + 1][k] + P[k + 1][m] == P[h][m]
+            and r + C[h + 1][k] + C[k + 1][m] == C[h][m]
+        )
+
     for length in range(n, 0, -1):
         for h in range(0, n - length + 1):
             m = h + length
-            outside = Out[h][m]
-            if outside == 0.0:
+            outside = E[h][m]
+            if outside == 0:
                 continue
-            parent_ways = W[h][m]
-            # 跳过规则：父 [h,m) -> 子 [h+1,m)。
+            # 跳过规则：父 [h,m) -> 子 [h+1,m)，外部补全不变。
             if P[h + 1][m] == P[h][m] and C[h + 1][m] == C[h][m]:
-                rule_share = W[h + 1][m] / parent_ways
-                Out[h + 1][m] += outside * rule_share
+                E[h + 1][m] += outside
             # 配对规则：父 [h,m) 经弧 (h,k) -> 左子 [h+1,k)、右子 [k+1,m)。
-            for k, r, _cid in arcs[h]:
-                if k >= m:
+            for k, r, cid in arcs[h]:
+                if not rule_optimal(h, m, k, r):
                     continue
-                if (
-                    1 + P[h + 1][k] + P[k + 1][m] == P[h][m]
-                    and r + C[h + 1][k] + C[k + 1][m] == C[h][m]
-                ):
-                    left_ways = W[h + 1][k]
-                    right_ways = W[k + 1][m]
-                    rule_share = (left_ways * right_ways) / parent_ways
-                    branch_share = outside * rule_share
-                    Out[h + 1][k] += branch_share
-                    Out[k + 1][m] += branch_share
+                left_ways = W[h + 1][k]
+                right_ways = W[k + 1][m]
+                # 该弧在此父块中出现的全局最优方案数：
+                # 外部补全 × 左子方案 × 右子方案（弧本身唯一确定）。
+                used_count[cid] += outside * left_ways * right_ways
+                # 左子的外部多了弧 (h,k) 与右子的任一方案；右子对称。
+                E[h + 1][k] += outside * right_ways
+                E[k + 1][m] += outside * left_ways
 
-    # ---------- 候选对出现次数与分类 ----------
-    # 弧 (a,b) 作为某父区间 [a,m) 的首步规则出现：
-    # 出现方案数 = W[a+1][b] * Σ_m O[a][m] * W[b+1][m]（仅计最优规则）。
-    used_count: dict[str, float] = {}
-    for cid, a, b, r in candidates:
-        count = 0.0
-        interior_ways = W[a + 1][b]
-        for m in range(b + 1, n + 1):
-            if (
-                1 + P[a + 1][b] + P[b + 1][m] == P[a][m]
-                and r + C[a + 1][b] + C[b + 1][m] == C[a][m]
-            ):
-                parent_ways = W[a][m]
-                rule_ways = interior_ways * W[b + 1][m]
-                count += Out[a][m] * (rule_ways / parent_ways)
-        used_count[cid] = count
-
+    # ---------- 候选对分类 ----------
     required: list[str] = []
     optional: list[str] = []
     never: list[str] = []
-    for cid, a, b, _r in candidates:
+    for cid, _a, _b, _r in candidates:
         c = used_count[cid]
         if c == 0:
             never.append(cid)
-        elif c == 1.0:
+        elif c == total:
             required.append(cid)
         else:
             optional.append(cid)
 
     # ---------- 规范方案回溯 ----------
+    # choice 已在 inside DP 中记录取得字典序最小 id 序列的首步，直接沿其回溯。
     canonical_ids: list[str] = []
     unmatched_idx: list[int] = []
-    required_set = set(required)
 
     def build(i: int, j: int) -> None:
         while i < j:
             step = choice[i][j]
             assert step is not None
-            if step[0] == "s" or step[2] not in required_set:
-                for k, r, cid in arcs[i]:
-                    if cid not in required_set or k >= j:
-                        continue
-                    if (
-                        1 + P[i + 1][k] + P[k + 1][j] == P[i][j]
-                        and r + C[i + 1][k] + C[k + 1][j] == C[i][j]
-                    ):
-                        step = ("p", k, cid)
-                        break
             if step[0] == "s":
                 unmatched_idx.append(i)
                 i += 1

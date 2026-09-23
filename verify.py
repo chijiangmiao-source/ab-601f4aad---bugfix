@@ -17,6 +17,13 @@ import sys
 import urllib.error
 import urllib.request
 
+from tests.large_tie import (
+    EXPECTED_OPTIMAL_COUNT,
+    expected_candidate_ids,
+    expected_canonical_sequence,
+    large_tie_payload,
+)
+
 API_BASE = os.environ.get("API_BASE_URL", "http://127.0.0.1:8080").rstrip("/")
 REQUIRE_FILES = os.environ.get("REQUIRE_BUILD_FILES", "").split(",")
 
@@ -207,6 +214,30 @@ def run_smoke() -> None:
         status == 400 and any(e["field"] == "/hits" for e in body["errors"]),
         "击中规模越界被拒绝", f"HTTP {status} {body}",
     )
+
+    # 场景 5：大规模同优（171 击中 / 226 候选，4^28+1 个最优方案）。
+    # 由代码测试侧的规律化数据生成器构造，核对精确计数、完整分类与规范序列，
+    # 覆盖 2^53 以上任意精度计数下候选归属/规范配对/未配对击中的一致性。
+    payload = large_tie_payload()
+    status, body = http_request("POST", "/audit", payload)
+    seq = [p["id"] for p in body.get("canonical_pairs", [])]
+    cls = body.get("classification", {})
+    ok = (
+        status == 200
+        and body.get("optimal_count") == str(EXPECTED_OPTIMAL_COUNT)
+        and body.get("paired_hits") == 170
+        and body.get("total_residual") == 0
+        and cls.get("required") == []
+        and cls.get("never") == []
+        and sorted(cls.get("optional", [])) == sorted(expected_candidate_ids())
+        and len(cls.get("optional", [])) == 226
+        and seq == expected_canonical_sequence()
+        and body.get("unmatched_hits") == ["h170"]
+    )
+    check(ok, "大规模同优: 精确计数/全可选分类/规范序列/未配对 h170",
+          f"HTTP {status} count={body.get('optimal_count')} "
+          f"required={cls.get('required')} unmatched={body.get('unmatched_hits')} "
+          f"seq_head={seq[:3]}")
 
     # 未知路径返回 404。
     status, _ = http_request("GET", "/nope")

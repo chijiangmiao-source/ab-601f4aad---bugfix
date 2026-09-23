@@ -10,6 +10,12 @@ import pytest
 from solver import MAX_CANDIDATES, MAX_HITS, MIN_HITS, ValidationError, audit
 
 from tests.brute import brute_solve
+from tests.large_tie import (
+    EXPECTED_OPTIMAL_COUNT,
+    expected_candidate_ids,
+    expected_canonical_sequence,
+    large_tie_payload,
+)
 
 
 def make_hits(n, prefix="h"):
@@ -163,6 +169,68 @@ def test_unmatched_reported():
     candidates = [cand("m", "h1", "h4", 0)]
     res = audit({"hits": hits, "candidates": candidates})
     assert res["unmatched_hits"] == ["h0", "h2", "h3", "h5"]
+
+
+# ------------------------------------------------ 大规模同优（2^56 量级）
+
+
+def test_large_tie_dataset_shape():
+    payload = large_tie_payload()
+    assert len(payload["hits"]) == 171
+    assert len(payload["candidates"]) == 226
+    ids = [c["id"] for c in payload["candidates"]]
+    assert ids == expected_candidate_ids()
+    assert all(c["residual"] == 0 for c in payload["candidates"])
+    # 所有候选左端点严格小于右端点。
+    pos = {h["id"]: h["position"] for h in payload["hits"]}
+    for c in payload["candidates"]:
+        assert pos[c["left_endpoint"]] < pos[c["right_endpoint"]]
+
+
+def test_large_tie_metrics_exact():
+    res = audit(large_tie_payload())
+    # 计数必须精确（字符串承载任意精度），不能因浮点舍入损失 1。
+    assert res["optimal_count"] == str(EXPECTED_OPTIMAL_COUNT)
+    assert res["paired_hits"] == 170
+    assert res["total_residual"] == 0
+
+
+def test_large_tie_classification_all_optional():
+    res = audit(large_tie_payload())
+    cls = res["classification"]
+    assert cls["required"] == []
+    assert cls["never"] == []
+    # 完整分类：226 条全部可选，且涵盖生成数据的全部 id。
+    assert sorted(cls["optional"]) == sorted(expected_candidate_ids())
+    assert len(cls["optional"]) == 226
+
+
+def test_large_tie_canonical_and_unmatched():
+    res = audit(large_tie_payload())
+    seq = [p["id"] for p in res["canonical_pairs"]]
+    # 规范序列：a-split, g00e0..g27e0, 然后 g27..g00 每组 e5、e7。
+    assert seq == expected_canonical_sequence()
+    # 每条配对端点/残差与候选记录一致。
+    by_id = {c["id"]: c for c in large_tie_payload()["candidates"]}
+    for p in res["canonical_pairs"]:
+        assert p["residual"] == 0
+        assert p["left_endpoint"] == by_id[p["id"]]["left_endpoint"]
+        assert p["right_endpoint"] == by_id[p["id"]]["right_endpoint"]
+    # 唯一未配对击中为 h170；配对恰好覆盖其余 170 个击中。
+    assert res["unmatched_hits"] == ["h170"]
+    used = set()
+    for p in res["canonical_pairs"]:
+        used.add(p["left_endpoint"])
+        used.add(p["right_endpoint"])
+    assert used == {f"h{k}" for k in range(170)}
+
+
+def test_large_tie_arc_usage_counts():
+    # 两条外层弧的出现方案数：z-outer 在 4^28 个方案中，a-split 仅 1 个。
+    res = audit(large_tie_payload())
+    optional = set(res["classification"]["optional"])
+    assert {"a-split", "z-outer"} <= optional
+    assert int(res["optimal_count"]) == EXPECTED_OPTIMAL_COUNT
 
 
 # ---------------------------------------------------------------- 校验错误
