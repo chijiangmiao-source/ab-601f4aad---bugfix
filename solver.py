@@ -16,6 +16,7 @@ n <= 180、|C| <= 4000。
 
 from __future__ import annotations
 
+from fractions import Fraction
 from typing import Any, Optional
 
 MIN_HITS = 4
@@ -262,18 +263,20 @@ def audit(payload: Any) -> dict[str, Any]:
     # ---------- outside DP ----------
     # O[i][j]：根区间 [0,n) 的最优方案中，[i,j) 作为一个内部最优子区间出现的
     # 方案数（外部上下文数）。按父区间向其两个子区间下发贡献。
-    Out = [[0.0] * (n + 1) for _ in range(n + 1)]
-    Out[0][n] = 1.0
+    # 必须使用任意精度分数：方案数可达 3^60 量级，浮点除法会把
+    # total/(total+1) 这类比例舍入为 1.0，从而把可选项误判为必选。
+    Out = [[Fraction(0) for _ in range(n + 1)] for _ in range(n + 1)]
+    Out[0][n] = Fraction(1)
     for length in range(n, 0, -1):
         for h in range(0, n - length + 1):
             m = h + length
             outside = Out[h][m]
-            if outside == 0.0:
+            if outside == 0:
                 continue
             parent_ways = W[h][m]
             # 跳过规则：父 [h,m) -> 子 [h+1,m)。
             if P[h + 1][m] == P[h][m] and C[h + 1][m] == C[h][m]:
-                rule_share = W[h + 1][m] / parent_ways
+                rule_share = Fraction(W[h + 1][m], parent_ways)
                 Out[h + 1][m] += outside * rule_share
             # 配对规则：父 [h,m) 经弧 (h,k) -> 左子 [h+1,k)、右子 [k+1,m)。
             for k, r, _cid in arcs[h]:
@@ -285,7 +288,7 @@ def audit(payload: Any) -> dict[str, Any]:
                 ):
                     left_ways = W[h + 1][k]
                     right_ways = W[k + 1][m]
-                    rule_share = (left_ways * right_ways) / parent_ways
+                    rule_share = Fraction(left_ways * right_ways, parent_ways)
                     branch_share = outside * rule_share
                     Out[h + 1][k] += branch_share
                     Out[k + 1][m] += branch_share
@@ -293,9 +296,9 @@ def audit(payload: Any) -> dict[str, Any]:
     # ---------- 候选对出现次数与分类 ----------
     # 弧 (a,b) 作为某父区间 [a,m) 的首步规则出现：
     # 出现方案数 = W[a+1][b] * Σ_m O[a][m] * W[b+1][m]（仅计最优规则）。
-    used_count: dict[str, float] = {}
+    used_count: dict[str, Fraction] = {}
     for cid, a, b, r in candidates:
-        count = 0.0
+        count = Fraction(0)
         interior_ways = W[a + 1][b]
         for m in range(b + 1, n + 1):
             if (
@@ -304,7 +307,7 @@ def audit(payload: Any) -> dict[str, Any]:
             ):
                 parent_ways = W[a][m]
                 rule_ways = interior_ways * W[b + 1][m]
-                count += Out[a][m] * (rule_ways / parent_ways)
+                count += Out[a][m] * Fraction(rule_ways, parent_ways)
         used_count[cid] = count
 
     required: list[str] = []
@@ -314,30 +317,21 @@ def audit(payload: Any) -> dict[str, Any]:
         c = used_count[cid]
         if c == 0:
             never.append(cid)
-        elif c == 1.0:
+        elif c == 1:
             required.append(cid)
         else:
             optional.append(cid)
 
     # ---------- 规范方案回溯 ----------
+    # 直接按 inside DP 记录的最小序列首步（choice）回溯：分类结果可能因大整数
+    # 规模变化而更新，但规范序列只由目标值与 id 字典序决定，二者必须解耦。
     canonical_ids: list[str] = []
     unmatched_idx: list[int] = []
-    required_set = set(required)
 
     def build(i: int, j: int) -> None:
         while i < j:
             step = choice[i][j]
             assert step is not None
-            if step[0] == "s" or step[2] not in required_set:
-                for k, r, cid in arcs[i]:
-                    if cid not in required_set or k >= j:
-                        continue
-                    if (
-                        1 + P[i + 1][k] + P[k + 1][j] == P[i][j]
-                        and r + C[i + 1][k] + C[k + 1][j] == C[i][j]
-                    ):
-                        step = ("p", k, cid)
-                        break
             if step[0] == "s":
                 unmatched_idx.append(i)
                 i += 1

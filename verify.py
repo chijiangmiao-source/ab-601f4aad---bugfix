@@ -180,6 +180,37 @@ def run_smoke() -> None:
     )
     check(ok, "非法引用返回字段路径错误且无审计结果", f"HTTP {status} {body}")
 
+    # 场景 5：大规模同优方案（4^28+1）——候选归属、规范配对、未配对击中一致性。
+    large_hits = hits(171)
+    large_cands = [
+        cand("a-split", 0, 57, 0),
+        cand("z-outer", 0, 170, 0),
+    ]
+    local_pairs = [(0, 1), (0, 3), (0, 5), (1, 2), (1, 4), (2, 3), (3, 4), (4, 5)]
+    for g in range(28):
+        pts = [1 + 2 * g, 2 + 2 * g, 166 - 4 * g, 167 - 4 * g, 168 - 4 * g, 169 - 4 * g]
+        for e, (x, y) in enumerate(local_pairs):
+            large_cands.append(cand(f"g{g:02d}e{e}", pts[x], pts[y], 0))
+    expected_seq = ["a-split"] + [f"g{g:02d}e0" for g in range(28)]
+    for g in range(27, -1, -1):
+        expected_seq += [f"g{g:02d}e5", f"g{g:02d}e7"]
+    status, body = http_request(
+        "POST", "/audit", {"hits": large_hits, "candidates": large_cands}
+    )
+    cls = body.get("classification", {})
+    ok = (
+        status == 200
+        and body.get("optimal_count") == "72057594037927937"
+        and body.get("paired_hits") == 170
+        and body.get("total_residual") == 0
+        and cls.get("required") == []
+        and cls.get("never") == []
+        and len(cls.get("optional", [])) == 226
+        and [p["id"] for p in body.get("canonical_pairs", [])] == expected_seq
+        and body.get("unmatched_hits") == ["h170"]
+    )
+    check(ok, "大规模同优方案分类/规范解/未配对击中一致", f"HTTP {status} {body}")
+
     # 附加：重复端点对、位置冲突、规模越界。
     status, body = http_request(
         "POST",

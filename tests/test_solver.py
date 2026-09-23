@@ -165,6 +165,76 @@ def test_unmatched_reported():
     assert res["unmatched_hits"] == ["h0", "h2", "h3", "h5"]
 
 
+# ---------------------------------------------------------------- 大规模同优方案
+
+
+def build_large_tie_instance():
+    """生成规律化大规模同优实例：171 个击中、226 条候选、4^28+1 个最优方案。
+
+    结构：a-split=(h0,h57) 唯一搭配各单元 e0+e5+e7（仅 1 个方案）；
+    z-outer=(h0,h170) 内部 28 个相互嵌套的六击中单元，每单元 4 种完美匹配，
+    共 4^28 个方案。两族均为 85 对、零残差。
+    """
+    n = 171
+    hits = make_hits(n)
+    candidates = [
+        cand("a-split", "h0", "h57", 0),
+        cand("z-outer", "h0", "h170", 0),
+    ]
+    local_pairs = [(0, 1), (0, 3), (0, 5), (1, 2), (1, 4), (2, 3), (3, 4), (4, 5)]
+    for g in range(28):
+        pts = [1 + 2 * g, 2 + 2 * g, 166 - 4 * g, 167 - 4 * g, 168 - 4 * g, 169 - 4 * g]
+        for e, (x, y) in enumerate(local_pairs):
+            candidates.append(cand(f"g{g:02d}e{e}", f"h{pts[x]}", f"h{pts[y]}", 0))
+    return hits, candidates
+
+
+def expected_large_tie_canonical():
+    seq = ["a-split"]
+    seq += [f"g{g:02d}e0" for g in range(28)]
+    for g in range(27, -1, -1):
+        seq += [f"g{g:02d}e5", f"g{g:02d}e7"]
+    return seq
+
+
+def test_large_tie_full_classification_and_canonical():
+    hits, candidates = build_large_tie_instance()
+    assert len(candidates) == 226
+
+    res = audit({"hits": hits, "candidates": candidates})
+
+    # 数值精确：4^28 + 1 = 72057594037927937，170 个已配对击中，零残差。
+    assert res["optimal_count"] == "72057594037927937"
+    assert res["optimal_count"] == str(4 ** 28 + 1)
+    assert res["paired_hits"] == 170
+    assert res["total_residual"] == 0
+
+    # 226 条候选全部可选；必选与从不出现列表均为空。
+    cls = res["classification"]
+    assert cls["required"] == []
+    assert cls["never"] == []
+    all_ids = sorted(c["id"] for c in candidates)
+    assert cls["optional"] == all_ids
+
+    # 规范序列：a-split，随后 g00e0..g27e0，再从 g27 倒序每组 e5、e7。
+    ids = [p["id"] for p in res["canonical_pairs"]]
+    expected = expected_large_tie_canonical()
+    assert ids == expected
+    assert len(ids) == 85
+
+    # 规范配对的端点与残差自洽。
+    endpoint = {c["id"]: (c["left_endpoint"], c["right_endpoint"]) for c in candidates}
+    covered = set()
+    for p in res["canonical_pairs"]:
+        assert p["residual"] == 0
+        assert (p["left_endpoint"], p["right_endpoint"]) == endpoint[p["id"]]
+        covered |= {p["left_endpoint"], p["right_endpoint"]}
+    assert len(covered) == 170
+
+    # 唯一未配对击中为 h170。
+    assert res["unmatched_hits"] == ["h170"]
+
+
 # ---------------------------------------------------------------- 校验错误
 
 
